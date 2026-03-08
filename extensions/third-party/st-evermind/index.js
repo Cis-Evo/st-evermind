@@ -18,15 +18,22 @@ const defaultSettings = Object.freeze({
     growth_enabled: false,
 });
 
+// _settingsMerged 防止每次调用都 clone+merge（热路径优化）
+let _settingsMerged = false;
+
 function getSettings() {
     const ctx = SillyTavern.getContext();
     if (!ctx.extensionSettings[MODULE_NAME]) {
         ctx.extensionSettings[MODULE_NAME] = structuredClone(defaultSettings);
+        _settingsMerged = true;
     }
-    ctx.extensionSettings[MODULE_NAME] = SillyTavern.libs.lodash.merge(
-        structuredClone(defaultSettings),
-        ctx.extensionSettings[MODULE_NAME]
-    );
+    if (!_settingsMerged) {
+        ctx.extensionSettings[MODULE_NAME] = SillyTavern.libs.lodash.merge(
+            structuredClone(defaultSettings),
+            ctx.extensionSettings[MODULE_NAME]
+        );
+        _settingsMerged = true;
+    }
     return ctx.extensionSettings[MODULE_NAME];
 }
 
@@ -751,35 +758,35 @@ globalThis.everMindInterceptor = async function (chat, contextSize, abort, type)
     const memories = await EverMindClient.searchMemories(
         query, groupId, effectiveCharGroupId, 'both'
     );
-    if (!memories.length) return;
 
-    const memoryText = formatMemoriesForInjection(memories);
-    if (!memoryText) return;
-
-    if (s.inject_mode === 'system') {
-        chat.unshift({
-            is_user: false,
-            is_system: true,
-            name: 'Memory',
-            send_date: Date.now(),
-            mes: memoryText,
-        });
-    } else {
-        let insertAt = 0;
-        for (let i = chat.length - 1; i >= 0; i--) {
-            if (chat[i].is_user) { insertAt = i; break; }
+    if (memories.length) {
+        const memoryText = formatMemoriesForInjection(memories);
+        if (memoryText) {
+            if (s.inject_mode === 'system') {
+                chat.unshift({
+                    is_user: false,
+                    is_system: true,
+                    name: 'Memory',
+                    send_date: Date.now(),
+                    mes: memoryText,
+                });
+            } else {
+                let insertAt = 0;
+                for (let i = chat.length - 1; i >= 0; i--) {
+                    if (chat[i].is_user) { insertAt = i; break; }
+                }
+                chat.splice(insertAt, 0, {
+                    is_user: false,
+                    name: 'Memory',
+                    send_date: Date.now(),
+                    mes: memoryText,
+                });
+            }
+            console.debug(`[${MODULE_NAME}] Injected ${memories.length} memories (type: ${type})`);
         }
-        chat.splice(insertAt, 0, {
-            is_user: false,
-            name: 'Memory',
-            send_date: Date.now(),
-            mes: memoryText,
-        });
     }
 
-    console.debug(`[${MODULE_NAME}] Injected ${memories.length} memories (type: ${type})`);
-
-    // Part 2：注入角色内心状态
+    // Part 2：注入角色内心状态（独立于普通记忆，不被 memories.length 门控）
     if (s.growth_enabled && effectiveCharGroupId) {
         const innerMemories = await EverMindClient.searchMemories(
             '内心状态', effectiveCharGroupId, null, 'character'
