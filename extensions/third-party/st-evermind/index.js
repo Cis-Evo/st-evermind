@@ -356,10 +356,53 @@ function mountSettingsPanel() {
     bindSettingsEvents();
 }
 
+// ── 消息写回 ──────────────────────────────────────────────────
+
+async function handleMessageWriteback(messageIndex) {
+    const s = getSettings();
+    if (!s.enabled || !s.auto_write) return;
+
+    const groupId = getCurrentGroupId();
+    const charName = getCurrentCharacterName();
+    if (!groupId || !charName) return;
+
+    const ctx = SillyTavern.getContext();
+    const message = ctx.chat[messageIndex];
+    if (!message?.mes) return;
+
+    await EverMindClient.writeMessage(message, groupId, charName);
+}
+
+async function handleChatChanged() {
+    const s = getSettings();
+    if (!s.enabled) return;
+
+    const ctx = SillyTavern.getContext();
+    if (ctx.characterId === undefined) return;
+    const char = ctx.characters[ctx.characterId];
+    if (!char) return;
+
+    // 重置 group_id 缓存
+    const meta = SillyTavern.getContext().chatMetadata;
+    if (meta[MODULE_NAME]) {
+        delete meta[MODULE_NAME].group_id;
+    }
+
+    const groupId = getCurrentGroupId();
+    await EverMindClient.upsertConversationMeta(groupId, char.name);
+}
+
+function registerEventListeners() {
+    const { eventSource, event_types } = SillyTavern.getContext();
+    eventSource.on(event_types.MESSAGE_SENT, handleMessageWriteback);
+    eventSource.on(event_types.MESSAGE_RECEIVED, handleMessageWriteback);
+    eventSource.on(event_types.CHAT_CHANGED, handleChatChanged);
+}
+
 // ── generate_interceptor 占位，Phase B 实现 ──────────────────
 
 globalThis.everMindInterceptor = async function (chat, contextSize, abort, type) {
-    // TODO: Phase B
+    // TODO: Task 6
 };
 
 // ── 扩展入口 ─────────────────────────────────────────────────
@@ -368,6 +411,7 @@ globalThis.everMindInterceptor = async function (chat, contextSize, abort, type)
     const { eventSource, event_types } = SillyTavern.getContext();
     eventSource.on(event_types.APP_READY, () => {
         mountSettingsPanel();
+        registerEventListeners();
         console.log(`[${MODULE_NAME}] Extension loaded`);
     });
 })();
