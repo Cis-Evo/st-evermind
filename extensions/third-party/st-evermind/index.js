@@ -301,7 +301,7 @@ const SETTINGS_HTML = `
   </div>
   <div class="evermind-row" style="flex-direction:row;gap:8px;margin-top:4px;">
     <button id="evermind-clear-session">清除当前对话记忆</button>
-    <button id="evermind-clear-char">清除角色全部记忆</button>
+    <button id="evermind-clear-char">清除角色跨对话记忆</button>
   </div>
 </div>
 `;
@@ -332,7 +332,16 @@ function bindSettingsEvents() {
         });
     };
 
-    bind('evermind-enabled', 'enabled');
+    // enabled 切换需要特殊处理：中途开启时补跑 handleChatChanged
+    const enabledEl = document.getElementById('evermind-enabled');
+    if (enabledEl) {
+        enabledEl.addEventListener('change', () => {
+            const current = getSettings();
+            current.enabled = enabledEl.checked;
+            saveSettingsDebounced();
+            if (enabledEl.checked) handleChatChanged();
+        });
+    }
     bind('evermind-api-url', 'api_base_url');
     bind('evermind-api-key', 'api_key');
     bind('evermind-user-id', 'user_id');
@@ -378,14 +387,14 @@ function bindSettingsEvents() {
         const charGroupId = getCurrentCharGroupId();
         const charName = getCurrentCharacterName();
         if (!charGroupId) { toastr.warning('没有选中角色'); return; }
-        if (!window.confirm(`确定清除「${charName}」的全部记忆？此操作不可撤销。`)) return;
+        if (!window.confirm(`确定清除「${charName}」的跨对话记忆？各对话内记忆不受影响。此操作不可撤销。`)) return;
         await EverMindClient.deleteMemories(charGroupId);
         const s = getSettings();
         if (s._cardHashes?.[charName]) {
             delete s._cardHashes[charName];
             SillyTavern.getContext().saveSettingsDebounced();
         }
-        toastr.success(`「${charName}」的全部记忆已清除`);
+        toastr.success(`「${charName}」的跨对话记忆已清除（各对话内记忆不受影响）`);
     });
 }
 
