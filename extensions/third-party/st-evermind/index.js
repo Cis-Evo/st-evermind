@@ -272,6 +272,20 @@ const SETTINGS_HTML = `
     </label>
   </div>
   <div class="evermind-row">
+    <label>新对话记忆继承</label>
+    <select id="evermind-inherit">
+      <option value="ask">每次询问（推荐）</option>
+      <option value="always">总是继承</option>
+      <option value="never">总是全新开局</option>
+    </select>
+  </div>
+  <div class="evermind-row">
+    <label>
+      <input type="checkbox" id="evermind-growth" />
+      角色关系成长
+    </label>
+  </div>
+  <div class="evermind-row">
     <button id="evermind-test-btn">测试连接</button>
     <span id="evermind-test-result"></span>
   </div>
@@ -287,6 +301,8 @@ function loadSettingsUI() {
     document.getElementById('evermind-inject-limit').value = s.inject_limit;
     document.getElementById('evermind-inject-mode').value = s.inject_mode;
     document.getElementById('evermind-auto-write').checked = s.auto_write;
+    document.getElementById('evermind-inherit').value = s.memory_inherit;
+    document.getElementById('evermind-growth').checked = s.growth_enabled;
 }
 
 function bindSettingsEvents() {
@@ -309,6 +325,8 @@ function bindSettingsEvents() {
     bind('evermind-inject-limit', 'inject_limit', Number);
     bind('evermind-inject-mode', 'inject_mode');
     bind('evermind-auto-write', 'auto_write');
+    bind('evermind-inherit', 'memory_inherit');
+    bind('evermind-growth', 'growth_enabled');
 
     // 测试连接：用最小可读 API（GET /memories?limit=1）
     document.getElementById('evermind-test-btn').addEventListener('click', async () => {
@@ -445,6 +463,11 @@ async function handleMessageWriteback(messageIndex) {
             toastr.info('关键设定已存入长期记忆', '', { timeOut: 2000 });
         }
     }
+
+    // Part 2：触发关系信号分析（双边：用户和 AI 消息都分析）
+    if (s.growth_enabled) {
+        analyzeRelationshipSignal(message, charName).catch(() => {});
+    }
 }
 
 // ── 记忆继承 ──────────────────────────────────────────────────
@@ -540,6 +563,148 @@ function registerEventListeners() {
     eventSource.on(event_types.CHAT_CHANGED, handleChatChanged);
 }
 
+// ── Part 2：角色关系成长 ──────────────────────────────────────
+
+const RELATIONSHIP_SIGNALS = {
+    support: [
+        '没事的', '我在这里', '陪着你', '不会走', '帮你',
+        "i'm here", "i'll stay", 'together', 'not alone',
+    ],
+    trust: [
+        '告诉你', '秘密', '只有你', '相信', '真实的',
+        'trust you', 'tell you', 'only you', 'honest',
+    ],
+    conflict: [
+        '失望', '离开', '不想', '够了', '为什么',
+        'disappointed', 'leave', 'why', 'enough',
+    ],
+    intimacy: [
+        '名字', '第一次', '想见你', '想到你', '不一样',
+        'your name', 'first time', 'think of you', 'different',
+    ],
+};
+
+function detectSignals(text) {
+    const found = [];
+    const lower = text.toLowerCase();
+    for (const [type, keywords] of Object.entries(RELATIONSHIP_SIGNALS)) {
+        if (keywords.some(kw => lower.includes(kw))) {
+            found.push(type);
+        }
+    }
+    return found;
+}
+
+const signalCounter = {};
+
+async function analyzeRelationshipSignal(message, charName) {
+    if (!message?.mes) return;
+
+    const signals = detectSignals(message.mes);
+    if (!signals.length) return;
+
+    const charGroupId = buildCharGroupId(charName);
+    const s = getSettings();
+
+    for (const signal of signals) {
+        if (!signalCounter[charName]) signalCounter[charName] = {};
+        signalCounter[charName][signal] = (signalCounter[charName][signal] || 0) + 1;
+
+        if (signalCounter[charName][signal] >= 3) {
+            signalCounter[charName][signal] = 0;
+            await consolidateRelationshipMemory(charGroupId, charName, signal, s.user_id);
+        }
+    }
+}
+
+async function consolidateRelationshipMemory(charGroupId, charName, signalType, userId) {
+    const memories = await EverMindClient.searchMemories(
+        signalType, charGroupId, null, 'character'
+    );
+    if (memories.length < 2) return;
+
+    const snippets = memories.slice(0, 6).map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
+
+    const { generateRaw } = SillyTavern.getContext();
+    if (typeof generateRaw !== 'function') {
+        console.warn(`[${MODULE_NAME}] generateRaw not available, skip consolidation`);
+        return;
+    }
+
+    const systemPrompt = `你是一个角色内心状态提取器。
+从角色「${charName}」与用户的互动记录中，提取角色当前真实的内心感受和关系认知。
+要求：
+1. 用角色第一人称内心独白风格书写，不超过 60 字
+2. 必须基于具体证据，不凭空推测
+3. 包含不确定性和矛盾感，不要过于直白
+4. 如证据不足以支撑任何结论，输出 null
+只输出内心独白文本或 null，不加任何说明。`;
+
+    const prompt = `关于「${signalType}」类型的互动，近期记录如下：
+${snippets}
+请提取「${charName}」对用户当前真实的内心感受。`;
+
+    let distilled = null;
+    try {
+        distilled = await generateRaw({ systemPrompt, prompt });
+        distilled = distilled?.trim();
+        if (!distilled || distilled === 'null') return;
+    } catch (e) {
+        console.error(`[${MODULE_NAME}] consolidation LLM call failed:`, e.message);
+        return;
+    }
+
+    await EverMindClient.writeMessage({
+        is_user: false,
+        name: charName,
+        send_date: Date.now(),
+        mes: `[内心状态/${signalType}] ${distilled}`,
+    }, charGroupId, charName, { flush: true });
+
+    console.debug(`[${MODULE_NAME}] Relationship memory consolidated:`, distilled);
+}
+
+async function detectCharacterDrift(charName) {
+    const charGroupId = buildCharGroupId(charName);
+    const { generateRaw } = SillyTavern.getContext();
+    if (typeof generateRaw !== 'function') return null;
+
+    const semanticMemories = await EverMindClient.searchMemories(
+        '内心状态', charGroupId, null, 'character'
+    );
+    if (semanticMemories.length < 2) return null;
+
+    const recentMemories = await EverMindClient.searchMemories(
+        charName, charGroupId, null, 'character'
+    );
+    if (recentMemories.length < 3) return null;
+
+    const semanticText = semanticMemories.slice(0, 4).map(m => m.content).join('\n');
+    const recentText = recentMemories.slice(0, 6).map(m => m.content).join('\n');
+
+    const systemPrompt = `你是角色「${charName}」的内心观察者。
+对比角色的稳定内心状态和近期行为，找出最有意思的变化或矛盾。
+用角色第一人称内心独白写出，30字以内，包含不确定感。
+如果没有明显变化，输出 null。`;
+
+    const prompt = `稳定的内心状态记录：
+${semanticText}
+
+近期行为记录：
+${recentText}
+
+角色注意到了什么变化？`;
+
+    try {
+        const result = await generateRaw({ systemPrompt, prompt });
+        const text = result?.trim();
+        if (!text || text === 'null') return null;
+        return text;
+    } catch {
+        return null;
+    }
+}
+
 // ── 记忆注入 ──────────────────────────────────────────────────
 
 function formatMemoriesForInjection(memories) {
@@ -606,6 +771,30 @@ globalThis.everMindInterceptor = async function (chat, contextSize, abort, type)
     }
 
     console.debug(`[${MODULE_NAME}] Injected ${memories.length} memories (type: ${type})`);
+
+    // Part 2：注入角色内心状态
+    if (s.growth_enabled && effectiveCharGroupId) {
+        const innerMemories = await EverMindClient.searchMemories(
+            '内心状态', effectiveCharGroupId, null, 'character'
+        );
+        if (innerMemories.length) {
+            const innerText = innerMemories
+                .slice(0, 2)
+                .map(m => m.content.replace('[内心状态/', '[').replace(']', '的感受]'))
+                .join('\n');
+
+            let innerInsertAt = chat.length - 1;
+            for (let i = chat.length - 1; i >= 0; i--) {
+                if (!chat[i].is_user) { innerInsertAt = i; break; }
+            }
+            chat.splice(innerInsertAt, 0, {
+                is_user: false,
+                name: `${charName} 内心`,
+                send_date: Date.now(),
+                mes: `[角色当前内心状态]\n${innerText}\n[内心状态结束]`,
+            });
+        }
+    }
 };
 
 // ── 记忆可视化面板 ────────────────────────────────────────────
@@ -618,11 +807,13 @@ const MEMORY_PANEL_HTML = `
   </div>
   <div class="evermind-tabs">
     <button class="evermind-tab active" data-tab="events">事件记忆</button>
+    <button class="evermind-tab" data-tab="inner">内心状态</button>
     <button class="evermind-tab" data-tab="canon">角色设定</button>
   </div>
   <div id="evermind-memory-list" class="evermind-list"></div>
   <div class="evermind-footer">
     <button id="evermind-refresh">刷新</button>
+    <button id="evermind-drift">感知变化</button>
   </div>
 </div>
 `;
@@ -641,6 +832,7 @@ async function refreshMemoryPanel(tab = 'events') {
 
     const queryMap = {
         events: { query: charName, scope: 'both' },
+        inner: { query: '内心状态', scope: 'character' },
         canon: { query: '角色设定', scope: 'character' },
     };
 
@@ -691,6 +883,20 @@ function mountMemoryPanel() {
     document.getElementById('evermind-refresh')?.addEventListener('click', () => {
         const activeTab = document.querySelector('.evermind-tab.active')?.dataset.tab;
         refreshMemoryPanel(activeTab);
+    });
+
+    // 感知变化（drift detect）
+    document.getElementById('evermind-drift')?.addEventListener('click', async () => {
+        const charName = getCurrentCharacterName();
+        if (!charName) return;
+        toastr.info('分析中...', '', { timeOut: 1500 });
+        const drift = await detectCharacterDrift(charName);
+        if (drift) {
+            const { Popup } = SillyTavern.getContext();
+            await Popup.show.text(`「${charName}」的内心变化`, drift);
+        } else {
+            toastr.info('尚未检测到明显变化');
+        }
     });
 
     document.getElementById('evermind-panel-close')?.addEventListener('click', () => {
