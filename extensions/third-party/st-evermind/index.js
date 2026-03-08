@@ -447,6 +447,62 @@ async function handleMessageWriteback(messageIndex) {
     }
 }
 
+// ── 记忆继承 ──────────────────────────────────────────────────
+
+async function checkHasMemory(charGroupId) {
+    try {
+        const res = await fetch(
+            `${getSettings().api_base_url}${API_BASE}?group_id=${charGroupId}&limit=1`,
+            { headers: EverMindClient._headers() }
+        );
+        if (!res.ok) return false;
+        const data = await res.json();
+        return (data.result?.memories?.length || 0) > 0;
+    } catch {
+        return false;
+    }
+}
+
+async function linkCharacterMemory(charName) {
+    const meta = SillyTavern.getContext().chatMetadata;
+    if (!meta[MODULE_NAME]) meta[MODULE_NAME] = {};
+    meta[MODULE_NAME].char_group_id = buildCharGroupId(charName);
+    meta[MODULE_NAME].inherited = true;
+    SillyTavern.getContext().saveMetadata();
+    console.debug(`[${MODULE_NAME}] Memory inherited for`, charName);
+}
+
+async function handleMemoryInheritance(charName) {
+    const s = getSettings();
+    if (s.memory_inherit === 'never') return;
+
+    const charGroupId = buildCharGroupId(charName);
+
+    if (s.memory_inherit === 'always') {
+        await linkCharacterMemory(charName);
+        return;
+    }
+
+    // 'ask' 模式
+    const hasHistory = await checkHasMemory(charGroupId);
+    if (!hasHistory) return;
+
+    const { Popup } = SillyTavern.getContext();
+    const confirm = await Popup.show.confirm(
+        'EverMind 记忆',
+        `发现与「${charName}」的历史记忆。\n是否让角色记得上次发生的事？`,
+    );
+
+    if (confirm) {
+        await linkCharacterMemory(charName);
+        toastr.success(`「${charName}」记得你们的历史`);
+    } else {
+        toastr.info('全新开局，角色不记得之前的事');
+    }
+}
+
+// ── CHAT_CHANGED 处理 ────────────────────────────────────────
+
 async function handleChatChanged() {
     const s = getSettings();
     if (!s.enabled) return;
@@ -456,10 +512,12 @@ async function handleChatChanged() {
     const char = ctx.characters[ctx.characterId];
     if (!char) return;
 
-    // 重置 group_id 缓存
+    // 重置缓存（含继承字段）
     const meta = SillyTavern.getContext().chatMetadata;
     if (meta[MODULE_NAME]) {
         delete meta[MODULE_NAME].group_id;
+        delete meta[MODULE_NAME].char_group_id;
+        delete meta[MODULE_NAME].inherited;
     }
 
     const groupId = getCurrentGroupId();
@@ -470,6 +528,9 @@ async function handleChatChanged() {
     if (charGroupId) {
         await writeCharacterCardToMemory(charGroupId, char);
     }
+
+    // 记忆继承
+    await handleMemoryInheritance(char.name);
 }
 
 function registerEventListeners() {
@@ -504,12 +565,19 @@ globalThis.everMindInterceptor = async function (chat, contextSize, abort, type)
     const groupId = getCurrentGroupId();
     if (!groupId) return;
 
-    const lastMsg = getLastUserMessage(chat);
-    if (!lastMsg) return;
+    // 双 scope 检索：session + character（含继承）
+    const charGroupId = getCurrentCharGroupId();
+    const meta = SillyTavern.getContext().chatMetadata;
+    const inheritedCharGroupId = meta[MODULE_NAME]?.char_group_id || null;
+    const effectiveCharGroupId = inheritedCharGroupId || charGroupId;
 
-    // 最小版：只查 session scope，Phase C 升级为双 scope
+    const charName = getCurrentCharacterName() || '';
+    const lastMsg = getLastUserMessage(chat);
+    const query = `${charName} ${lastMsg}`.trim();
+    if (!query) return;
+
     const memories = await EverMindClient.searchMemories(
-        lastMsg, groupId, null, 'session'
+        query, groupId, effectiveCharGroupId, 'both'
     );
     if (!memories.length) return;
 
