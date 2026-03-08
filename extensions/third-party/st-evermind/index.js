@@ -98,9 +98,12 @@ const EverMindClient = {
     async writeMessage(stMessage, groupId, charName, { flush = false } = {}) {
         const s = getSettings();
         const isUser = stMessage.is_user;
+        const ts = stMessage.send_date || Date.now();
+        const d = new Date(ts);
+        const isoTime = isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
         const payload = {
-            message_id: `st_${stMessage.send_date || Date.now()}_${isUser ? s.user_id : 'char'}_${Math.random().toString(36).slice(2, 6)}`,
-            create_time: new Date(stMessage.send_date || Date.now()).toISOString(),
+            message_id: `st_${ts}_${isUser ? s.user_id : 'char'}_${Math.random().toString(36).slice(2, 6)}`,
+            create_time: isoTime,
             sender: isUser ? s.user_id : charName,
             sender_name: isUser ? (stMessage.name || s.user_id) : charName,
             role: isUser ? 'user' : 'assistant',
@@ -306,14 +309,14 @@ function loadSettingsUI() {
 }
 
 function bindSettingsEvents() {
-    const s = getSettings();
     const { saveSettingsDebounced } = SillyTavern.getContext();
 
     const bind = (id, key, transform = (v) => v) => {
         const el = document.getElementById(id);
         if (!el) return;
         el.addEventListener('change', () => {
-            s[key] = transform(el.type === 'checkbox' ? el.checked : el.value);
+            const current = getSettings();
+            current[key] = transform(el.type === 'checkbox' ? el.checked : el.value);
             saveSettingsDebounced();
         });
     };
@@ -333,11 +336,10 @@ function bindSettingsEvents() {
         const result = document.getElementById('evermind-test-result');
         result.textContent = '连接中...';
         try {
-            const h = { 'Content-Type': 'application/json' };
-            if (s.api_key) h['Authorization'] = `Bearer ${s.api_key}`;
+            const current = getSettings();
             const res = await fetch(
-                `${s.api_base_url}${API_BASE}?user_id=test&limit=1`,
-                { headers: h }
+                `${current.api_base_url}${API_BASE}?user_id=test&limit=1`,
+                { headers: EverMindClient._headers() }
             );
             if (res.ok) {
                 result.textContent = '✅ 连接成功';
@@ -511,12 +513,17 @@ async function handleMemoryInheritance(charName) {
     if (!hasHistory) return;
 
     const { Popup } = SillyTavern.getContext();
-    const confirm = await Popup.show.confirm(
-        'EverMind 记忆',
-        `发现与「${charName}」的历史记忆。\n是否让角色记得上次发生的事？`,
-    );
+    let confirmed = false;
+    if (Popup?.show?.confirm) {
+        confirmed = await Popup.show.confirm(
+            'EverMind 记忆',
+            `发现与「${charName}」的历史记忆。\n是否让角色记得上次发生的事？`,
+        );
+    } else {
+        confirmed = window.confirm(`发现与「${charName}」的历史记忆。是否让角色记得上次发生的事？`);
+    }
 
-    if (confirm) {
+    if (confirmed) {
         await linkCharacterMemory(charName);
         toastr.success(`「${charName}」记得你们的历史`);
     } else {
@@ -780,7 +787,7 @@ globalThis.everMindInterceptor = async function (chat, contextSize, abort, type)
         if (innerMemories.length) {
             const innerText = innerMemories
                 .slice(0, 2)
-                .map(m => m.content.replace('[内心状态/', '[').replace(']', '的感受]'))
+                .map(m => m.content.replace(/\[内心状态\/([^\]]+)\]/, '[$1的感受]'))
                 .join('\n');
 
             let innerInsertAt = chat.length - 1;
@@ -893,7 +900,11 @@ function mountMemoryPanel() {
         const drift = await detectCharacterDrift(charName);
         if (drift) {
             const { Popup } = SillyTavern.getContext();
-            await Popup.show.text(`「${charName}」的内心变化`, drift);
+            if (Popup?.show?.text) {
+                await Popup.show.text(`「${charName}」的内心变化`, drift);
+            } else {
+                toastr.success(drift, `「${charName}」的内心变化`, { timeOut: 5000 });
+            }
         } else {
             toastr.info('尚未检测到明显变化');
         }
