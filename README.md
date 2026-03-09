@@ -8,11 +8,27 @@ SillyTavern 第三方扩展，通过 [EverMind](https://github.com/EverMind-ai) 
 2. 输入仓库地址：`https://github.com/tt-a1i/st-evermind`
 3. 安装后在扩展设置中找到 **EverMind Memory** 面板
 
+## 启动代理
+
+扩展通过本地代理访问 EverMind Cloud API（绕过浏览器 CORS 限制），使用前需先启动代理：
+
+```bash
+# 启动代理（保持终端窗口开着）
+cd extensions/third-party/st-evermind/proxy
+node proxy.js
+
+# 或者把 API Key 作为参数传入（扩展设置里就不用填了）
+node proxy.js 7721 sk-your-evermind-api-key
+```
+
+代理零依赖，只用 Node.js 内置模块，无需 `npm install`。与 SillyTavern 启动顺序无关。
+
 ## 配置
 
 | 设置项 | 说明 | 默认值 |
 |--------|------|--------|
-| API 地址 | EverMind 服务地址 | `https://api.evermind.ai` |
+| API 地址 | EverMind 服务地址（仅显示，实际走代理） | `https://api.evermind.ai` |
+| 代理端口 | 本地代理端口 | `7721` |
 | API Key | EverMind API 密钥 | 空 |
 | User ID | 用户标识 | `default_user` |
 | 注入条数 | 每次生成注入多少条记忆 | `5` |
@@ -52,8 +68,11 @@ SillyTavern 第三方扩展，通过 [EverMind](https://github.com/EverMind-ai) 
 
 ```
 manifest.json    扩展声明（generate_interceptor: everMindInterceptor）
-index.js         全部逻辑（~980 行）
+index.js         全部逻辑（~990 行）
 style.css        面板与设置样式
+proxy/
+  proxy.js       本地 CORS 代理（零依赖，Node.js 内置模块）
+  package.json   ESM 声明
 ```
 
 - 双 group_id 设计：`st_{char}_{chat}` 会话级 + `st_char_{char}` 角色级
