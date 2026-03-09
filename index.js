@@ -3,6 +3,8 @@
 // 单文件实现，所有模块内联
 // ============================================================
 
+import { getRequestHeaders } from '/script.js';
+
 const MODULE_NAME = 'st_evermind';
 const API_BASE = '/api/v0/memories';
 
@@ -91,26 +93,15 @@ function getLastUserMessage(chat) {
 
 // ── EverMind HTTP 客户端 ──────────────────────────────────────
 
-// ST /proxy 需要携带 ST 自己的认证头（X-CSRF-Token 等），否则返回 403
-function stFetch(url, options = {}) {
-    const ctx = SillyTavern.getContext();
-    const stHeaders = ctx.getRequestHeaders ? ctx.getRequestHeaders() : {};
-    return fetch(url, {
-        ...options,
-        headers: {
-            ...stHeaders,
-            ...(options.headers || {}),
-        },
-    });
-}
-
 const EverMindClient = {
 
     _headers() {
         const s = getSettings();
-        const h = { 'Content-Type': 'application/json' };
-        if (s.api_key) h['Authorization'] = `Bearer ${s.api_key}`;
-        return h;
+        return {
+            ...getRequestHeaders(),
+            'Content-Type': 'application/json',
+            ...(s.api_key ? { 'Authorization': `Bearer ${s.api_key}` } : {}),
+        };
     },
 
     _url(path = '') {
@@ -140,7 +131,7 @@ const EverMindClient = {
         if (flush) payload.flush = true;
 
         try {
-            const res = await stFetch(this._url(''), {
+            const res = await fetch(this._url(''), {
                 method: 'POST',
                 headers: this._headers(),
                 body: JSON.stringify(payload),
@@ -170,7 +161,7 @@ const EverMindClient = {
                 include_metadata: true,
             };
             try {
-                const res = await stFetch(this._url('/search'), {
+                const res = await fetch(this._url('/search'), {
                     method: 'POST',
                     headers: this._headers(),
                     body: JSON.stringify(payload),
@@ -235,7 +226,7 @@ const EverMindClient = {
             tags: ['sillytavern', 'roleplay'],
         };
         try {
-            const res = await stFetch(this._url('/conversation-meta'), {
+            const res = await fetch(this._url('/conversation-meta'), {
                 method: 'POST',
                 headers: this._headers(),
                 body: JSON.stringify(payload),
@@ -249,7 +240,7 @@ const EverMindClient = {
 
     async deleteMemories(groupId) {
         try {
-            await stFetch(this._url(''), {
+            await fetch(this._url(''), {
                 method: 'DELETE',
                 headers: this._headers(),
                 body: JSON.stringify({ group_id: groupId }),
@@ -375,7 +366,7 @@ function bindSettingsEvents() {
         result.textContent = '连接中...';
         result.style.color = '';
         try {
-            const res = await stFetch(
+            const res = await fetch(
                 EverMindClient._url('?user_id=test&limit=1'),
                 { headers: EverMindClient._headers() }
             );
@@ -543,8 +534,8 @@ async function handleMessageWriteback(messageIndex) {
 async function checkHasMemory(charGroupId) {
     const s = getSettings();
     try {
-        const res = await stFetch(
-            EverMindClient._url(`?user_id=${s.user_id}&group_id=${charGroupId}&limit=1`),
+        const res = await fetch(
+            EverMindClient._url(`?user_id=${encodeURIComponent(s.user_id)}&group_id=${encodeURIComponent(charGroupId)}&limit=1`),
             { headers: EverMindClient._headers() }
         );
         if (!res.ok) return false;
